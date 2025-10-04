@@ -12,3 +12,43 @@ MLBB Quick Draft Coach is a Vite + React single-page assistant that helps Mobile
 1. Install dependencies:
    ```bash
    npm install
+   ```
+2. Start the Vite dev server:
+   ```bash
+   npm run dev
+   ```
+3. Build or preview production assets when you’re ready to deploy:
+   ```bash
+   npm run build
+   npm run preview
+   ```
+
+The app mounts on `#root` in `index.html`, which also pulls TailwindCSS from the CDN for rapid styling tweaks.
+
+## Data Flow & Fallbacks
+1. Try `https://mlbb-proxy.tonycelestino.workers.dev/stats` for roster, hero detail, rankings, counters, and compatibility data.
+2. Retry through permissive proxies (isomorphic-git, Jina AI HTTP/HTTPS mirrors, AllOrigins) to dodge CORS failures.
+3. Fall back to `https://mlbb-proxy.tonycelestino.workers.dev/wiki/heroes` if the Stats API is unavailable.
+4. Default to the bundled roster so the UI remains usable offline or when every remote source fails.
+
+Each fetch path logs success or failure with its source so you can spot network issues from the browser console.
+
+## Strategic Heuristics
+- Extend or adjust hero-specific metadata in `HERO_AUGMENT` to control inferred roles, damage types, and tags without editing raw API payloads.
+- Composition profiling counts tag occurrences to flag poke, dive, sustain, CC, and damage-mix patterns that influence spell/item advice.
+- Suggestions recalc automatically whenever you change role selections or enemy heroes, ensuring guidance stays aligned with the current draft state.
+
+## UI Guide
+1. Choose your role and hero (auto-complete from the loaded roster).
+2. Pick allies/enemies with the multi-select panel (up to 4 allies, 5 enemies).
+3. Review spell, item, lane, macro, and rule recommendations plus API-driven counters/synergies and composition indicators once enemies are set.
+
+Self-test status, roster source, and attribution details appear in the footer so you always know which dataset powered the advice.
+
+## Debugging Tips
+Open the browser console to watch `[QuickDraft]` logs for network attempts, roster outcomes, memoized strategy outputs, and self-test verdicts, which streamline troubleshooting during development.
+
+## Acknowledgements
+- Mobile Legends: Bang Bang © Moonton.
+- Live stats courtesy of ridwaanhall (BSD-3).
+- This project is fan-made and unaffiliated with Moonton.
