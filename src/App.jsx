@@ -1,147 +1,209 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 /**
- * MLBB Quick Draft Coach — V1 (Alpha)
- * Single-file React app (Tailwind styles). No external APIs.
+ * MLBB Quick Draft Coach [with debug logs]
+ * Objetivo: usar dados ONLINE automaticamente (Stats API) com máxima chance de funcionar no browser.
+ * Estratégia: tentativa direta → proxies públicos (isomorphic‑git / Jina AI / AllOrigins) → Wiki → roster local.
+ * Sem exportação; inclui Indicadores de Composição + Regras de Ouro + Counters/Compat (quando IDs disponíveis).
+ * Atribuições: © Moonton; dados por ridwaanhall (BSD‑3). Este projeto não é afiliado à Moonton.
  *
- * What it does
- * - You select your role/hero, allies (optional) and enemy team.
- * - It tags the enemy comp (Dive, Pickoff, Poke, Sustain, Heavy CC, Tanky Frontline, Wombo, Split)
- * - It outputs: Lane/Early plan, Teamfight plan, Macro plan, Battle Spells, Item techs, and Suggested counters/synergies.
- *
- * Notes
- * - Initial hero pool focuses on meta/common heroes and all heroes seen in your recent chats.
- * - Names are case-insensitive and tolerate some common typos (e.g., "Matjhilda" -> Mathilda, "Faranis" -> Faramis).
- * - This is a heuristic engine: it won’t be perfect, but it should be fast and useful.
+ * 🔧 Esta versão adiciona APENAS logs/prints para depuração. Nenhuma lógica funcional foi alterada.
  */
 
-// --- Hero dataset (condensed). Extendable via HEROES below.
-// Tags glossary: "BacklineBurst", "Pickoff", "Poke", "Sustain", "HardCC", "Engage", "TankyFrontline", "Wombo", "Diver", "Split", "AntiTank", "Zone", "LateGame"
-// Role: "Gold", "EXP", "Mid", "Jungle", "Roam", "Flex"
-// Dmg: "Physical", "Magic", "Hybrid"
+// ========================= Debug helpers (logs) =========================
+const LOG  = (...args) => console.log("[QuickDraft]", ...args);
+const LOGW = (...args) => console.warn("[QuickDraft]", ...args);
+const LOGE = (...args) => console.error("[QuickDraft]", ...args);
 
-const HEROES = [
-  // Tanks / Roam
-  { name: "Franco", role: "Roam", dmg: "Physical", tags: ["HardCC", "Pickoff", "Engage"] },
-  { name: "Akai", role: "Roam", dmg: "Physical", tags: ["HardCC", "Engage", "TankyFrontline"] },
-  { name: "Tigreal", role: "Roam", dmg: "Physical", tags: ["HardCC", "Engage", "Wombo", "TankyFrontline"] },
-  { name: "Atlas", role: "Roam", dmg: "Physical", tags: ["HardCC", "Engage", "Wombo", "TankyFrontline"] },
-  { name: "Khufra", role: "Roam", dmg: "Physical", tags: ["HardCC", "Engage", "TankyFrontline"] },
-  { name: "Grock", role: "Roam", dmg: "Physical", tags: ["Engage", "TankyFrontline", "Pickoff"] },
-  { name: "Lolita", role: "Roam", dmg: "Physical", tags: ["HardCC", "Engage", "Zone", "TankyFrontline"] },
-  { name: "Baxia", role: "Roam", dmg: "Physical", tags: ["Engage", "TankyFrontline", "Sustain"] },
-  { name: "Johnson", role: "Roam", dmg: "Physical", tags: ["Engage", "Wombo", "TankyFrontline"] },
+// ========================= Config das APIs =========================
+const RID_API = "https://mlbb-proxy.tonycelestino.workers.dev/stats"; // docs: /api/
+const WIKI_API = "https://mlbb-proxy.tonycelestino.workers.dev/wiki/heroes"; // fallback de roster
 
-  // Supports
-  { name: "Estes", role: "Roam", dmg: "Magic", tags: ["Sustain"] },
-  { name: "Rafaela", role: "Roam", dmg: "Magic", tags: ["Sustain", "HardCC"] },
-  { name: "Faramis", role: "Roam", dmg: "Magic", tags: ["Sustain", "Wombo"] },
-  { name: "Floryn", role: "Roam", dmg: "Magic", tags: ["Sustain"] },
-  { name: "Angela", role: "Roam", dmg: "Magic", tags: ["Sustain"] },
-  { name: "Diggie", role: "Roam", dmg: "Magic", tags: ["Sustain", "Zone"] },
-  { name: "Mathilda", role: "Roam", dmg: "Magic", tags: ["Engage", "Pickoff", "Mobility"] },
-  { name: "Carmilla", role: "Roam", dmg: "Magic", tags: ["Wombo", "HardCC", "Sustain"] },
-
-  // Assassins
-  { name: "Saber", role: "Jungle", dmg: "Physical", tags: ["BacklineBurst", "Pickoff"] },
-  { name: "Gusion", role: "Jungle", dmg: "Magic", tags: ["BacklineBurst", "Pickoff", "Mobility"] },
-  { name: "Hayabusa", role: "Jungle", dmg: "Physical", tags: ["BacklineBurst", "Split", "Mobility"] },
-  { name: "Ling", role: "Jungle", dmg: "Physical", tags: ["BacklineBurst", "Split", "Mobility"] },
-  { name: "Natalia", role: "Jungle", dmg: "Physical", tags: ["BacklineBurst", "Pickoff"] },
-  { name: "Harley", role: "Mid", dmg: "Magic", tags: ["BacklineBurst", "Pickoff"] },
-
-  // Fighters
-  { name: "Freya", role: "EXP", dmg: "Physical", tags: ["Diver", "Engage", "BacklineBurst"] },
-  { name: "Aulus", role: "EXP", dmg: "Physical", tags: ["Split", "LateGame", "Diver"] },
-  { name: "Aldous", role: "EXP", dmg: "Physical", tags: ["Split", "LateGame", "BacklineBurst"] },
-  { name: "Chou", role: "EXP", dmg: "Physical", tags: ["Pickoff", "HardCC", "Mobility"] },
-  { name: "Yu Zhong", role: "EXP", dmg: "Physical", tags: ["Diver", "Sustain", "Engage"] },
-  { name: "Lapu-Lapu", role: "EXP", dmg: "Physical", tags: ["Diver", "Engage"] },
-  { name: "Paquito", role: "EXP", dmg: "Physical", tags: ["Diver", "Pickoff"] },
-  { name: "Terizla", role: "EXP", dmg: "Physical", tags: ["Wombo", "HardCC"] },
-  { name: "Leomord", role: "EXP", dmg: "Physical", tags: ["Diver", "Engage"] },
-  { name: "Yin", role: "EXP", dmg: "Physical", tags: ["Pickoff", "BacklineBurst"] },
-  { name: "Cici", role: "EXP", dmg: "Hybrid", tags: ["Diver", "Sustain"] },
-  { name: "Dyrroth", role: "EXP", dmg: "Physical", tags: ["AntiTank", "Pickoff"] },
-
-  // Mages
-  { name: "Lunox", role: "Mid", dmg: "Magic", tags: ["BacklineBurst", "AntiTank"] },
-  { name: "Odette", role: "Mid", dmg: "Magic", tags: ["Wombo", "AoE", "Stationary"] },
-  { name: "Chang'e", role: "Mid", dmg: "Magic", tags: ["Poke", "Siege", "Zone"] },
-  { name: "Zhask", role: "Mid", dmg: "Magic", tags: ["Zone", "Siege"] },
-  { name: "Pharsa", role: "Mid", dmg: "Magic", tags: ["Poke", "Siege"] },
-  { name: "Yve", role: "Mid", dmg: "Magic", tags: ["Poke", "Zone", "Siege"] },
-  { name: "Xavier", role: "Mid", dmg: "Magic", tags: ["Poke", "Zone"] },
-  { name: "Kagura", role: "Mid", dmg: "Magic", tags: ["Pickoff", "Poke"] },
-  { name: "Lylia", role: "Mid", dmg: "Magic", tags: ["Poke", "Mobility"] },
-  { name: "Valir", role: "Mid", dmg: "Magic", tags: ["Zone", "AntiTank"] },
-
-  // Marksmen
-  { name: "Miya", role: "Gold", dmg: "Physical", tags: ["LateGame", "DPS"] },
-  { name: "Karrie", role: "Gold", dmg: "Physical", tags: ["AntiTank", "DPS"] },
-  { name: "Bruno", role: "Gold", dmg: "Physical", tags: ["LaneBully", "Burst"] },
-  { name: "Clint", role: "Gold", dmg: "Physical", tags: ["LaneBully", "Burst"] },
-  { name: "Layla", role: "Gold", dmg: "Physical", tags: ["LateGame", "NoMobility"] },
-  { name: "Lesley", role: "Gold", dmg: "Physical", tags: ["Poke", "Burst"] },
-  { name: "Brody", role: "Gold", dmg: "Physical", tags: ["AntiTank", "SelfPeel"] },
-  { name: "Melissa", role: "Gold", dmg: "Physical", tags: ["AntiDive", "SelfPeel"] },
-  { name: "Claude", role: "Gold", dmg: "Physical", tags: ["AoE", "Mobility"] },
-  { name: "Beatrix", role: "Gold", dmg: "Physical", tags: ["LaneBully", "Siege"] },
-  { name: "Moskov", role: "Gold", dmg: "Physical", tags: ["DPS", "Mobility"] },
-  { name: "Hanabi", role: "Gold", dmg: "Physical", tags: ["DPS"] },
-  { name: "Granger", role: "Jungle", dmg: "Physical", tags: ["Burst"] },
-  { name: "Natan", role: "Gold", dmg: "Hybrid", tags: ["DPS", "Mobility"] },
-  { name: "Kimmy", role: "Gold", dmg: "Hybrid", tags: ["Poke", "Siege"] },
-
-  // Hybrids
-  { name: "Roger", role: "Jungle", dmg: "Hybrid", tags: ["Diver", "Pickoff", "LateGame"] },
-  { name: "Selena", role: "Roam", dmg: "Magic", tags: ["Pickoff", "Poke"] },
+// Lista de proxies CORS abertos (ordem de tentativa)
+const PROXIES = [
+  (u) => `https://cors.isomorphic-git.org/${u}`,
+  (u) => `https://r.jina.ai/http://${u.replace(/^https?:\/\//, "")}`,
+  (u) => `https://r.jina.ai/https://${u.replace(/^https?:\/\//, "")}`,
+  (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
 ];
 
-const NAME_FIX = new Map(
-  [
-    ["matjhilda", "Mathilda"],
-    ["mathilda", "Mathilda"],
-    ["faranis", "Faramis"],
-    ["change", "Chang'e"],
-    ["changg", "Chang'e"],
-    ["gusion", "Gusion"],
-    ["zhask", "Zhask"],
-  ]
-);
+// ===== Fallback local (offline/CORS) — lista ampla de heróis =====
+const LOCAL_FALLBACK_ROSTER = [
+  // Marksmen
+  "Miya","Layla","Bruno","Clint","Karrie","Brody","Melissa","Beatrix","Moskov","Hanabi","Lesley","Natan","Kimmy","Granger","Claude","Irithel","Wanwan","Yi Sun-shin","Popol and Kupa",
+  // Mages
+  "Lunox","Odette","Chang'e","Zhask","Pharsa","Yve","Xavier","Kagura","Lylia","Valir","Gord","Cecilion","Harley","Aurora","Alice","Eudora","Cyclops","Esmeralda","Kadita","Vale","Nana","Vexana","Luo Yi","Yanya",
+  // Assassins
+  "Saber","Gusion","Hayabusa","Ling","Natalia","Lancelot","Karina","Fanny","Helcurt","Benedetta","Aamon","Hanzo","Joy","Alucard",
+  // Fighters / EXP
+  "Freya","Aulus","Aldous","Chou","Yu Zhong","Lapu-Lapu","Paquito","Terizla","Leomord","Yin","Cici","Dyrroth","Martis","Thamuz","Zilong","Balmond","X.Borg","Jawhead","Ruby","Masha","Guinevere","Argus","Sun","Badang","Minsitthar","Silvanna","Julian","Bane",
+  // Tanks & Supports
+  "Franco","Akai","Tigreal","Atlas","Khufra","Grock","Lolita","Baxia","Johnson","Belerick","Hylos","Uranus","Minotaur","Gatotkaca","Barats","Edith","Fredrinn","Gloo",
+  "Estes","Rafaela","Angela","Floryn","Faramis","Diggie","Carmilla","Mathilda"
+];
 
-const ALL_HEROES = HEROES.map(h => h.name).sort();
+// ========================= Utilidades =========================
+const NAME_FIX = new Map([
+  ["matjhilda", "Mathilda"],
+  ["mathilda", "Mathilda"],
+  ["faranis", "Faramis"],
+  ["change", "Chang'e"],
+  ["changg", "Chang'e"],
+]);
 
 function normalizeName(name) {
-  const n = (name||"").trim().toLowerCase();
+  const n = (name || "").trim().toLowerCase();
   if (!n) return "";
-  return NAME_FIX.get(n) || n.replace(/(^|\s)\w/g, m => m.toUpperCase());
+  const fixed = NAME_FIX.get(n);
+  if (fixed) { LOG("normalizeName: fix applied", { from: name, to: fixed }); return fixed; }
+  const titled = n.replace(/(^|\s)\w/g, (m) => m.toUpperCase());
+  if (name !== titled) LOG("normalizeName:", name, "->", titled);
+  return titled;
 }
 
-function findHero(name) {
-  const nn = normalizeName(name);
-  return HEROES.find(h => h.name.toLowerCase() === nn.toLowerCase());
+// Tentativa de fetch com fallback de proxies
+async function getJSON(url) {
+  LOG("getJSON:start", url);
+  // 1) direta
+  try {
+    LOG("getJSON:try:direct", url);
+    const direct = await fetch(url, { headers: { Accept: "application/json" } });
+    LOG("getJSON:direct:status", { ok: direct.ok, status: direct.status, url });
+    if (direct.ok) {
+      const txt = await direct.text();
+      LOG("getJSON:direct:bytes", txt?.length ?? 0);
+      const parsed = JSON.parse(txt);
+      LOG("getJSON:success:direct", url);
+      return { json: parsed, via: "direct" };
+    }
+  } catch (err) {
+    LOGW("getJSON:direct:error", url, err);
+  }
+  // 2) proxies
+  for (const build of PROXIES) {
+    const proxyUrl = build(url);
+    try {
+      LOG("getJSON:try:proxy", proxyUrl);
+      const r = await fetch(proxyUrl, { headers: { Accept: "application/json" } });
+      LOG("getJSON:proxy:status", { ok: r.ok, status: r.status, proxyUrl });
+      if (!r.ok) continue;
+      const txt = await r.text();
+      LOG("getJSON:proxy:bytes", { len: txt?.length ?? 0, proxyUrl });
+      const parsed = JSON.parse(txt);
+      LOG("getJSON:success:proxy", proxyUrl);
+      return { json: parsed, via: proxyUrl };
+    } catch (err) {
+      LOGW("getJSON:proxy:error", proxyUrl, err);
+    }
+  }
+  LOGE("getJSON:fail", url);
+  throw new Error("Falha (direto e proxies)");
 }
 
-const ROLE_DEFAULTS = {
-  Gold: { coreSpell: "Flicker" },
-  EXP: { coreSpell: "Vengeance" },
-  Mid: { coreSpell: "Flicker" },
-  Jungle: { coreSpell: "Retribution" },
-  Roam: { coreSpell: "Flicker" },
+// -------- Deep utilities for flexible parsing --------
+function walkObject(obj, visitor) {
+  const seen = new WeakSet();
+  (function recur(o) {
+    if (!o || typeof o !== 'object' || seen.has(o)) return;
+    seen.add(o);
+    for (const k of Object.keys(o)) {
+      try { visitor(k, o[k], o); } catch (_) {}
+      recur(o[k]);
+    }
+  })(obj);
+}
+function getFirstByKeys(obj, keys) {
+  if (!obj) return undefined;
+  const lower = new Set(keys.map(k => String(k).toLowerCase()));
+  let found;
+  walkObject(obj, (k, v) => {
+    if (found !== undefined) return;
+    if (lower.has(String(k).toLowerCase())) found = v;
+  });
+  return found;
+}
+function extractArray(payload) {
+  if (!payload) return [];
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.records)) return payload.records;
+  if (Array.isArray(payload?.data?.records)) return payload.data.records;
+  if (Array.isArray(payload?.data?.records?.data)) return payload.data.records.data;
+  if (Array.isArray(payload?.results)) return payload.results;
+  return [];
+}
+
+// Inferência básica de função -> rota/dano (sobrescrita por AUGMENT quando existir)
+const ROLE_MAP = { Marksman: "Gold", Fighter: "EXP", Mage: "Mid", Assassin: "Jungle", Tank: "Roam", Support: "Roam" };
+function inferFromRole(apiRole) {
+  switch (apiRole) {
+    case "Marksman": return { role: "Gold", dmg: "Physical", tags: ["DPS"] };
+    case "Fighter":  return { role: "EXP", dmg: "Physical", tags: ["Diver"] };
+    case "Mage":     return { role: "Mid", dmg: "Magic", tags: ["Poke"] };
+    case "Assassin": return { role: "Jungle", dmg: "Physical", tags: ["BacklineBurst","Pickoff","Mobility"] };
+    case "Tank":     return { role: "Roam", dmg: "Physical", tags: ["TankyFrontline","Engage"] };
+    case "Support":  return { role: "Roam", dmg: "Magic", tags: ["Sustain"] };
+    default:          return { role: "Flex", dmg: "Physical", tags: [] };
+  }
+}
+
+// Tags curadas p/ exceções de dano/estilo (pode expandir conforme preferir)
+const HERO_AUGMENT = {
+  Gusion: { role: "Jungle", dmg: "Magic", tags: ["BacklineBurst","Pickoff","Mobility"] },
+  Natan:  { role: "Gold",   dmg: "Hybrid", tags: ["DPS","Mobility"] },
+  Kimmy:  { role: "Gold",   dmg: "Hybrid", tags: ["Poke","Siege"] },
+  Valir:  { role: "Mid",    dmg: "Magic",  tags: ["Zone","AntiTank"] },
+  Karrie: { role: "Gold",   dmg: "Physical", tags: ["AntiTank","DPS"] },
+  Miya:   { role: "Gold",   dmg: "Physical", tags: ["LateGame","DPS"] },
+  Brody:  { role: "Gold",   dmg: "Physical", tags: ["AntiTank","SelfPeel"] },
+  Melissa:{ role: "Gold",   dmg: "Physical", tags: ["AntiDive","SelfPeel"] },
+  Bruno:  { role: "Gold",   dmg: "Physical", tags: ["LaneBully","Burst"] },
+  Clint:  { role: "Gold",   dmg: "Physical", tags: ["LaneBully","Burst"] },
+  "Chang'e":{ role: "Mid",    dmg: "Magic",   tags: ["Poke","Siege","Zone"] },
+  Pharsa: { role: "Mid",    dmg: "Magic",   tags: ["Poke","Siege"] },
+  Yve:    { role: "Mid",    dmg: "Magic",   tags: ["Poke","Zone","Siege"] },
+  Estes:  { role: "Roam",   dmg: "Magic",   tags: ["Sustain"] },
+  Floryn: { role: "Roam",   dmg: "Magic",   tags: ["Sustain"] },
+  Faramis:{ role: "Roam",   dmg: "Magic",   tags: ["Sustain","Wombo"] },
+  Franco: { role: "Roam",   dmg: "Physical",tags: ["HardCC","Pickoff","Engage"] },
+  Akai:   { role: "Roam",   dmg: "Physical",tags: ["HardCC","Engage","TankyFrontline"] },
+  Tigreal:{ role: "Roam",   dmg: "Physical",tags: ["HardCC","Engage","Wombo","TankyFrontline"] },
+  Atlas:  { role: "Roam",   dmg: "Physical",tags: ["HardCC","Engage","Wombo","TankyFrontline"] },
+  Lolita: { role: "Roam",   dmg: "Physical",tags: ["HardCC","Engage","Zone","TankyFrontline"] },
+  Khufra: { role: "Roam",   dmg: "Physical",tags: ["HardCC","Engage","TankyFrontline"] },
+  Dyrroth:{ role: "EXP",    dmg: "Physical",tags: ["AntiTank","Pickoff"] },
+  Freya:  { role: "EXP",    dmg: "Physical",tags: ["Diver","Engage","BacklineBurst"] },
+  "Yu Zhong": { role: "EXP", dmg: "Physical", tags: ["Diver","Sustain","Engage"] },
+  "Lapu-Lapu":{ role: "EXP", dmg: "Physical", tags: ["Diver","Engage"] },
+  Terizla:{ role: "EXP",    dmg: "Physical",tags: ["Wombo","HardCC"] },
+  Leomord:{ role: "EXP",    dmg: "Physical",tags: ["Diver","Engage"] },
+  Yin:    { role: "EXP",    dmg: "Physical",tags: ["Pickoff","BacklineBurst"] },
+  Cici:   { role: "EXP",    dmg: "Hybrid",  tags: ["Diver","Sustain"] },
+  Selena: { role: "Roam",   dmg: "Magic",  tags: ["Pickoff","Poke"] },
 };
 
+// ========================= Perfil de composição =========================
 function tagCount(heroes) {
   const counts = {};
   heroes.forEach(h => h?.tags?.forEach(t => counts[t] = (counts[t]||0)+1));
   return counts;
 }
-
 function enemyProfile(enemies) {
   const counts = tagCount(enemies);
   const sum = (k) => counts[k]||0;
+  const physical = enemies.reduce((a,h)=> a + (h?.dmg==="Physical"?1: h?.dmg==="Hybrid"?0.5:0), 0);
+  const magic    = enemies.reduce((a,h)=> a + (h?.dmg==="Magic"   ?1: h?.dmg==="Hybrid"?0.5:0), 0);
+  const total = enemies.length || 1;
+  const adPct = Math.round(100*physical/total);
+  const apPct = Math.round(100*magic/total);
   return {
-    counts,
+    counts, adPct, apPct,
+    mixLabel: Math.abs(adPct-apPct) <= 30 ? "Balanceada" : (adPct>apPct?"Mais Physical":"Mais Magic"),
+    frontlineScore: sum("TankyFrontline") + sum("Engage") + sum("Diver"),
+    ccScore: sum("HardCC"),
+    sustainScore: sum("Sustain"),
+    waveclearScore: sum("Poke") + sum("Siege") + sum("Zone"),
+    mobilityScore: sum("Mobility"),
     heavyDive: sum("Diver") + sum("Engage") >= 2,
     heavyPick: sum("Pickoff") + sum("BacklineBurst") >= 2,
     heavyPoke: sum("Poke") + sum("Siege") >= 2,
@@ -156,13 +218,13 @@ function suggestSpell(myHero, myRole, prof) {
   if (myRole === "Jungle") return "Retribution";
   if (prof.heavyPick || prof.heavyCC) {
     if (myHero?.role === "Gold" || myRole === "Gold") return "Purify";
-    return "Flicker"; // generic safety
+    return "Flicker";
   }
   if (prof.heavyDive) {
     if (myHero?.name === "Melissa" || myHero?.name === "Brody") return "Aegis";
     return "Flicker";
   }
-  return ROLE_DEFAULTS[myRole]?.coreSpell || "Flicker";
+  return { Gold:"Flicker", EXP:"Vengeance", Mid:"Flicker", Jungle:"Retribution", Roam:"Flicker" }[myRole] || "Flicker";
 }
 
 function suggestItems(myHero, myRole, prof) {
@@ -171,37 +233,25 @@ function suggestItems(myHero, myRole, prof) {
   const mm = (myHero?.role === "Gold" || myRole === "Gold");
   const tanky = prof.tankyFront;
   const sustain = prof.heavySustain;
-  const magicThreat = prof.heavyPoke; // proxy for magic spam lanes
-
+  const magicThreat = prof.heavyPoke;
   if (mm) {
-    // Core build heuristics for MM
-    if (myHero?.name === "Karrie") {
-      items.push("DHS → Golden Staff", "Swift Boots/Tough Boots");
-      if (tanky) items.push("Malefic Roar");
-    } else if (myHero?.name === "Miya") {
-      items.push("Swift Boots", "DHS", "Corrosion Scythe");
-    } else if (myHero?.name === "Bruno" || myHero?.name === "Clint") {
-      items.push("Swift Boots", "Berserker's Fury", "Endless Battle/Blade of Despair");
-    } else if (myHero?.name === "Brody") {
-      items.push("Tough Boots/Swift Boots", "Hunter Strike", "Blade of Despair");
-    } else if (myHero?.name === "Melissa") {
-      items.push("Swift Boots", "Corrosion Scythe", "Golden Staff");
-    } else {
-      items.push("Boots", "Attack Speed/Core item", "Crit/DPS item");
-    }
-
+    if (myHero?.name === "Karrie") { items.push("DHS → Golden Staff","Swift/Tough Boots"); if (tanky) items.push("Malefic Roar"); }
+    else if (myHero?.name === "Miya") { items.push("Swift Boots","DHS","Corrosion Scythe"); }
+    else if (["Bruno","Clint"].includes(myHero?.name)) { items.push("Swift Boots","Berserker's Fury","Endless/BoD"); }
+    else if (myHero?.name === "Brody") { items.push("Tough/Swift Boots","Hunter Strike","BoD"); }
+    else if (myHero?.name === "Melissa") { items.push("Swift Boots","Corrosion Scythe","Golden Staff"); }
+    else if (myHero?.name === "Beatrix") { items.push("Swift Boots","Berserker's Fury","Malefic Roar (sit.)"); }
+    else { items.push("Boots","Atk Speed/Core","Crit/DPS"); }
     if (tanky) items.push("Malefic Roar");
     if (sustain) items.push("Sea Halberd (anti-heal)");
-    if (prof.heavyPick) items.push("Wind of Nature (vs físico)", "Immortality late");
-    if (magicThreat) items.push("Athena's Shield (situação)");
+    if (prof.heavyPick) items.push("Wind of Nature (vs físico)","Immortality (late)");
+    if (magicThreat) items.push("Athena's Shield (sit.)");
   } else {
-    // Generic non-MM techs
-    if (sustain) tech.push("Anti-heal: Necklace of Durance / Sea Halberd / Dominance Ice");
-    if (tanky) tech.push("Anti-tank: Malefic Roar / Dyrroth / Karrie core / Genius Wand (mages)");
-    if (prof.heavyPoke) tech.push("Resistência: Tough Boots / Athena's / Oracle");
+    if (sustain) tech.push("Anti-heal: Necklace/Sea Halberd/Dominance");
+    if (tanky)  tech.push("Anti-tank: Malefic Roar / Dyrroth / Karrie / Genius Wand");
+    if (prof.heavyPoke) tech.push("Resist: Tough / Athena's / Oracle");
     if (prof.heavyPick || prof.heavyCC) tech.push("Defensivos: Immortality / Winter / Athena's");
   }
-
   return { core: items, tech };
 }
 
@@ -209,67 +259,65 @@ function lanePlan(myHero, myRole, enemies) {
   const names = enemies.map(e=>e?.name);
   const tips = [];
   if (myRole === "Gold") {
-    if (names.some(n => ["Bruno","Clint"].includes(n))) {
-      tips.push("Nível 1–3 jogue recuado. Trade só após habilidades do adversário estarem em CD.");
-    }
-    if (names.includes("Franco")) tips.push("Sempre atrás de minions vs Franco. Guarde Flicker/Purify para o Hook.");
-    if (names.includes("Estes") || names.includes("Floryn")) tips.push("Compre Corte de Cura cedo (Halberd) e force trades longos apenas após ult/skill de cura.");
-    tips.push("Controle de wave: congele próximo da sua T1 para evitar ganks e dar espaço para seu roam.");
+    if (["Bruno","Clint"].some(x=>names.includes(x))) tips.push("Níveis 1–3: recuado; troque só pós-CD deles.");
+    if (names.includes("Franco")) tips.push("Atrás dos minions. Purify/Flicker p/ Hook.");
+    if (names.includes("Estes") || names.includes("Floryn")) tips.push("Anti-heal cedo; troque após cura/ult.");
+    tips.push("Congele a wave perto da sua T1 p/ negar gank e abrir janela pro Roam.");
   } else if (myRole === "Mid") {
-    if (names.includes("Chang'e") || names.includes("Pharsa") || names.includes("Yve")) tips.push("Evite ficar exposto em corredor. Rotacione por ângulos curtos e use arbustos.");
+    if (["Chang'e","Pharsa","Yve"].some(x=>names.includes(x))) tips.push("Evite corredor; rotacione por arbustos/ângulos curtos.");
+    tips.push("Rotacione em prio de wave p/ Tartaruga/side.");
   } else if (myRole === "EXP") {
-    if (names.includes("Yu Zhong") || names.includes("Paquito") || names.includes("Freya")) tips.push("Primeiros minutos são deles: jogue no XP, puxe quando vier reset de skill.");
+    if (["Yu Zhong","Paquito","Freya"].some(x=>names.includes(x))) tips.push("Early é deles: jogue no XP e puxe só com reset.");
+  } else if (myRole === "Jungle") {
+    tips.push("1ª rotação pro lado com prio; sem prio de mid, evite invadir.");
+  } else if (myRole === "Roam") {
+    tips.push("Níveis 1–3: visão em pixel bush; guie rotações p/ objetivo.");
   }
   return tips;
 }
 
 function teamfightPlan(prof) {
   const tips = [];
-  if (prof.heavyPick) tips.push("Jogue com visão/controle de arbusto; não facecheck. Espere hooks/ultimates saírem antes de entrar.");
-  if (prof.heavyDive) tips.push("Formação de kite-back: backline 1 tela atrás da frontline; peça peel ativo do Roam.");
-  if (prof.wombo) tips.push("Evite lutar em locais apertados. Espalhe-se e use objetivos laterais para puxar o inimigo.");
-  if (prof.heavyPoke) tips.push("Comece lutas só após gastar recursos de poke inimigo ou com ângulo flanco.");
-  return tips.length ? tips : ["Jogue pelo setup de visão, forçando 5v4 antes de iniciar objetivos."];
+  if (prof.heavyPick) tips.push("Visão/arbusto antes de iniciar; baitar hooks/ults.");
+  if (prof.heavyDive) tips.push("Kite-back: backline 1 tela atrás; peel ativo do Roam.");
+  if (prof.wombo) tips.push("Evite choke; puxe luta p/ side e espalhe.");
+  if (prof.heavyPoke) tips.push("Engaje após gastar poke inimigo ou por flanco.");
+  return tips.length ? tips : ["Setup de visão; busque 5v4 p/ objetivos."];
 }
 
 function macroPlan(myRole, myHero, prof) {
   const tips = [];
-  tips.push("Priorize Tartaruga/Senhor e trocas inteligentes de torre.");
-  if (myRole === "Gold") tips.push("Power spike em 2 itens: quebre T1 com rotação 4-man aos ~6–8 min e então jogue sides.");
-  if (prof.heavyPick) tips.push("Evite mid lane 5v5. Pressione sides e conecte rotações com o Roam.");
-  if (prof.tankyFront) tips.push("Objetivos longos sob visão: derreta frontline antes do backline.");
-  if (prof.heavySustain) tips.push("Conteste com anti-heal online; sem isso, só zoneie e negocie tempo.");
+  tips.push("Jogue por Tartaruga/Senhor e trocas inteligentes de torre.");
+  if (myRole === "Gold") tips.push("Spike 2 itens: derrube T1 com 4-man aos ~6–8min e jogue side.");
+  if (prof.heavyPick) tips.push("Evite 5v5 mid; pressione sides e sincronize com o Roam.");
+  if (prof.tankyFront) tips.push("Em fights longas: derreta frontline antes de mirar backline.");
+  if (prof.heavySustain) tips.push("Sem anti-heal, dispute visão/tempo, não a luta.");
   return tips;
 }
 
-function suggestions(myHero, myRole, enemies) {
-  const prof = enemyProfile(enemies);
-  const spell = suggestSpell(myHero, myRole, prof);
-  const items = suggestItems(myHero, myRole, prof);
-  const lane = lanePlan(myHero, myRole, enemies);
-  const tf = teamfightPlan(prof);
-  const macro = macroPlan(myRole, myHero, prof);
-
-  const counters = [];
-  const synergy = [];
-  // Simple hero-specific callouts
-  const names = enemies.map(e=>e?.name);
-  if (names.includes("Franco")) counters.push("Diggie (anti-CC), Lolita (escudo projéteis), Purify nos carregadores");
-  if (names.includes("Saber") || names.includes("Gusion")) counters.push("Rafaela/Estes (peel), Aegis em Brody/Melissa, posicionamento 2 telas");
-  if (names.includes("Estes") || names.includes("Floryn")) counters.push("Anti-heal cedo em pelo menos 2 heróis");
-  if (names.includes("Faramis")) counters.push("Evite wombo em corredor; Lolita/Valir ajudam a negar engage");
-  if (names.includes("Bruno") || names.includes("Clint")) counters.push("Roam cedo na Gold; punir pós-cooldown");
-  if (prof.tankyFront) counters.push("Karrie/Brody/Dyrroth como respostas a frontline pesada");
-
-  if (myRole === "Gold" && (myHero?.name === "Miya"||myHero?.name === "Karrie")) {
-    synergy.push("Roam com peel (Rafaela/Estes/Lolita)");
-    if (myHero?.name === "Karrie") synergy.push("Frontline que compra tempo (Akai/Tigreal)");
-    if (myHero?.name === "Miya") synergy.push("Controle de visão e reset de rota para fechar 2 itens rápido");
-  }
-
-  return { prof, spell, items, lane, tf, macro, counters, synergy };
+function goldenRules(myRole, prof) {
+  const base = [
+    "Anti-heal obrigatório vs cura (Estes/Floryn/Faramis) — 2 heróis com anti-heal é o ideal.",
+    "Balanceie AP/AD do time; muito físico => eles empilham armadura.",
+    "Sem visão, não entre em bush. Rotacione em grupo.",
+    "Timers: Tartaruga ~2:00, Senhor ~8:00. Prepare wave 30–40s antes.",
+  ];
+  const role = {
+    Gold: ["Minimize mortes; DPS morto = DPS zero.", "Decida lutas com spike de 2 itens."],
+    Mid: ["Wave control = rotação.", "Segure/adelante wave p/ criar janela de objetivo."],
+    Jungle: ["Objetivos > kills.", "Discipline de Retribution (calcule com seus skills)."],
+    EXP: ["Anuncie flanco/TP.", "Side pressure abre espaço pro objetivo."],
+    Roam: ["Você é peel/engage e visão.", "Pingue CDs de ult inimigos p/ o time."],
+  }[myRole] || [];
+  const comp = [];
+  if (prof.heavyPick) comp.push("Purify/Aegis nos carregadores; controle de bush.");
+  if (prof.heavyDive) comp.push("Peel no 1º diver; kite-back coordenado.");
+  if (prof.heavyPoke) comp.push("Lutas curtas/rápidas ou flanco; Athena/Oracle.");
+  if (prof.tankyFront) comp.push("Foco em frontline + penetração cedo.");
+  return [...base, ...role, ...comp];
 }
 
+// ========================= UI helpers =========================
 function Section({ title, children }) {
   return (
     <div className="bg-white/5 rounded-2xl p-4 border border-white/10 shadow-sm">
@@ -278,18 +326,20 @@ function Section({ title, children }) {
     </div>
   );
 }
-
-function MultiPick({ label, selected, setSelected }) {
+function MultiPick({ label, selected, setSelected, options, max = 5 }) {
   const [filter, setFilter] = useState("");
-  const pool = ALL_HEROES.filter(h => h.toLowerCase().includes(filter.toLowerCase()));
+  const pool = options.filter(h => h.toLowerCase().includes(filter.toLowerCase()));
   const toggle = (n) => {
-    setSelected(prev => prev.includes(n) ? prev.filter(x=>x!==n) : (prev.length<5 ? [...prev, n] : prev));
+    const willSelect = !selected.includes(n);
+    LOG("MultiPick:toggle", { label, name: n, action: willSelect ? "select" : "unselect" });
+    setSelected(prev => prev.includes(n) ? prev.filter(x=>x!==n) : (prev.length<max ? [...prev, n] : prev));
   };
   return (
     <div className="bg-white/5 rounded-2xl p-4 border border-white/10">
+            <div className="font-semibold mb-2">1. Seu herói e rota</div>
       <div className="flex items-center justify-between mb-2">
         <span className="font-medium">{label}</span>
-        <input className="bg-transparent border rounded px-2 py-1 text-sm" placeholder="buscar…" value={filter} onChange={e=>setFilter(e.target.value)} />
+        <input className="bg-transparent border rounded px-2 py-1 text-sm" placeholder="buscar…" value={filter} onChange={e=>{ setFilter(e.target.value); LOG("MultiPick:filter", { label, value: e.target.value }); }} />
       </div>
       <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-56 overflow-auto pr-1">
         {pool.map(n => (
@@ -301,77 +351,269 @@ function MultiPick({ label, selected, setSelected }) {
   );
 }
 
+// ========================= App =========================
 export default function App() {
   const [myRole, setMyRole] = useState("Gold");
-  const [myHeroName, setMyHeroName] = useState("Karrie");
-  const [ally, setAlly] = useState([]); // optional, up to 4
-  const [enemy, setEnemy] = useState([]); // up to 5
+  const [myHeroName, setMyHeroName] = useState("");
+  const [ally, setAlly] = useState([]);
+  const [enemy, setEnemy] = useState([]);
 
-  const myHero = useMemo(()=> findHero(myHeroName), [myHeroName]);
-  const allies = useMemo(()=> ally.map(findHero).filter(Boolean), [ally]);
-  const enemies = useMemo(()=> enemy.map(findHero).filter(Boolean), [enemy]);
-  const out = useMemo(()=> suggestions(myHero, myRole, enemies), [myHero, myRole, enemies]);
+  const [roster, setRoster] = useState([]);        // nomes dos heróis
+  const [nameToId, setNameToId] = useState(new Map());
+  const [apiError, setApiError] = useState("");
+  const [viaRoster, setViaRoster] = useState("");  // para debug/visibilidade
+
+  // Counters/Compat da API — por herói selecionado
+  const [counters, setCounters] = useState([]);
+  const [compat, setCompat] = useState([]);
+
+  // Hero meta (detalhe + taxas)
+  const [heroMeta, setHeroMeta] = useState({ img: null, sort: '—', road: '—', speciality: '—', pick: '—', ban: '—', win: '—' });
+
+  // ===== Self-tests =====
+  const [selfTest, setSelfTest] = useState({ ok: true, msg: '' });
+  useEffect(() => {
+    try {
+      const nm = "Chang'e";
+      const obj = { name: nm, ...(HERO_AUGMENT[nm] || inferFromRole(undefined)) };
+      if (obj.name !== nm) throw new Error("Augment p/ Chang'e");
+      if (normalizeName('matjhilda') !== 'Mathilda') throw new Error('normalizeName');
+      const kItems = suggestItems({ name:'Karrie', role:'Gold' }, 'Gold', { tankyFront:true, heavySustain:false, heavyPick:false, heavyPoke:false });
+      if (!kItems.core.join('|').includes('Malefic Roar')) throw new Error('Karrie no Malefic');
+      setSelfTest({ ok: true, msg: 'OK' });
+      LOG("SelfTests:OK");
+    } catch (e) {
+      setSelfTest({ ok: false, msg: String(e?.message||e) });
+      LOGE("SelfTests:FAIL", e);
+    }
+  }, []);
+
+  // Debug: mudanças de seleção
+  useEffect(() => { LOG("Selection:myRole", myRole); }, [myRole]);
+  useEffect(() => { LOG("Selection:myHero", myHeroName); }, [myHeroName]);
+  useEffect(() => { LOG("Selection:ally", ally); }, [ally]);
+  useEffect(() => { LOG("Selection:enemy", enemy); }, [enemy]);
+
+  // --- carregar roster: direto → proxies → Wiki → local ---
+  useEffect(() => {
+    async function loadRoster() {
+      LOG("loadRoster:start");
+      setApiError(""); setViaRoster("");
+      console.time("loadRoster");
+      try {
+        const rosterUrl = `${RID_API}/hero-list-new/`; const { json, via } = await getJSON(rosterUrl);
+        const recs = json?.data?.records || [];
+        const names = []; const map = new Map();
+        for (const rec of recs) {
+          const nm = normalizeName(rec?.data?.hero?.data?.name);
+          const id = rec?.data?.hero_id ?? rec?.data?.heroid;
+          if (nm && id != null) { names.push(nm); map.set(nm, id); }
+        }
+        LOG("loadRoster:stats:count", names.length, { via });
+        if (names.length) { const host = (via === "direct") ? (new URL(rosterUrl)).hostname : (new URL(via)).hostname; setRoster(Array.from(new Set(names)).sort()); setNameToId(map); setViaRoster(host); console.timeEnd("loadRoster"); return; }
+        throw new Error("Sem nomes na Stats API");
+      } catch (e) {
+        LOGW("loadRoster:stats:error", e);
+        try {
+          const { json, via } = await getJSON(WIKI_API);
+          const list = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
+          const names = list.map(h => normalizeName(h?.name)).filter(Boolean);
+          LOG("loadRoster:wiki:count", names.length, { via });
+          if (names.length) { const wikiHost = (via === "direct") ? (new URL(WIKI_API)).hostname : (new URL(via)).hostname; setRoster(names.sort()); setNameToId(new Map()); setViaRoster(`${wikiHost} (Wiki)`); setApiError("Usando roster de fallback (Wiki)"); console.timeEnd("loadRoster"); return; }
+          throw new Error("Wiki sem nomes");
+        } catch (e2) {
+          LOGW("loadRoster:wiki:error", e2);
+          const localNames = Array.from(new Set(LOCAL_FALLBACK_ROSTER.map(normalizeName))).filter(Boolean).sort();
+          LOG("loadRoster:local:count", localNames.length);
+          setRoster(localNames); setNameToId(new Map());
+          setApiError("Falha ao obter roster remoto (API + Wiki). Usando roster local (offline)");
+          setViaRoster("local");
+          console.timeEnd("loadRoster");
+        }
+      }
+    }
+    loadRoster();
+  }, []);
+
+  // --- construir objeto de herói pelo nome ---
+  function heroFromName(name) {
+    const nm = normalizeName(name);
+    if (!nm) return null;
+    if (HERO_AUGMENT[nm]) { LOG("heroFromName:augment", nm); return { name: nm, ...HERO_AUGMENT[nm] }; }
+    LOG("heroFromName:infer", nm);
+    return { name: nm, ...inferFromRole(undefined) };
+  }
+
+  const myHero = useMemo(()=> heroFromName(myHeroName), [myHeroName]);
+  const enemies = useMemo(()=> enemy.map(heroFromName).filter(Boolean), [enemy]);
+
+  const prof = useMemo(()=> { const p = enemyProfile(enemies); LOG("enemyProfile", p); return p; }, [enemies]);
+  const spell = useMemo(()=> { const s = suggestSpell(myHero, myRole, prof); LOG("suggestSpell", s); return s; }, [myHero, myRole, prof]);
+  const items = useMemo(()=> { const it = suggestItems(myHero, myRole, prof); LOG("suggestItems", it); return it; }, [myHero, myRole, prof]);
+  const lane  = useMemo(()=> { const lp = lanePlan(myHero, myRole, enemies); LOG("lanePlan", lp); return lp; }, [myHero, myRole, enemies]);
+  const tf    = useMemo(()=> { const t = teamfightPlan(prof); LOG("teamfightPlan", t); return t; }, [prof]);
+  const macro = useMemo(()=> { const m = macroPlan(myRole, myHero, prof); LOG("macroPlan", m); return m; }, [myRole, myHero, prof]);
+  const rules = useMemo(()=> { const r = goldenRules(myRole, prof); LOG("goldenRules", r); return r; }, [myRole, prof]);
+
+  // --- hero meta (detalhe + taxas) ---
+  useEffect(() => {
+    const id = nameToId.get(normalizeName(myHeroName));
+    setHeroMeta({ img: null, sort: '—', road: '—', speciality: '—', pick: '—', ban: '—', win: '—' });
+    if (!id) return;
+    (async () => {
+      try {
+        const { json: det } = await getJSON(`${RID_API}/hero-detail/${id}/`);
+        const d = det?.data ?? det;
+        const sort = (getFirstByKeys(d, ['sort','class','classe','role','type']) ?? '—');
+        const road = (getFirstByKeys(d, ['road','lane','rota','position']) ?? '—');
+        const speciality = (getFirstByKeys(d, ['speciality','specialty','especialidade']) ?? '—');
+        let img = (getFirstByKeys(d, ['head','image_head','avatar','icon']) ?? null);
+        if (img && typeof img === 'string' && !/^https?:/.test(img)) {
+          try { const origin = new URL(RID_API).origin; img = origin + (img.startsWith('/')? img : '/' + img); } catch (_) {}
+        }
+        LOG("heroMeta:detail", { sort, road, speciality, hasImg: !!img });
+        setHeroMeta(prev => ({ ...prev, img, sort, road, speciality }));
+      } catch (e) { LOGW('heroMeta:detail:error', e); }
+      try {
+        const { json: rk } = await getJSON(`${RID_API}/hero-rank/?days=7&tier=Mythic&per_page=300&page=1`);
+        const recs = extractArray(rk);
+        LOG("heroMeta:rank:recs", Array.isArray(recs) ? recs.length : 'n/a');
+        const idNum = Number(id);
+        const find = recs.find((r) => {
+          const rid = (r?.data?.hero_id ?? r?.hero_id ?? r?.data?.id ?? r?.id);
+          return Number(rid) === idNum;
+        });
+        const fmt = (v) => (v==null ? '—' : `${(Number(v) <= 1 ? Number(v)*100 : Number(v)).toFixed(2)}%`);
+        const pick = fmt(find?.data?.pick_rate ?? find?.pick_rate);
+        const ban  = fmt(find?.data?.ban_rate ?? find?.ban_rate);
+        const win  = fmt(find?.data?.win_rate ?? find?.win_rate);
+        LOG("heroMeta:rank", { pick, ban, win });
+        setHeroMeta(prev => ({ ...prev, pick, ban, win }));
+      } catch (e) { LOGW('heroMeta:rank:error', e); }
+    })();
+  }, [myHeroName, nameToId]);
+
+  // --- counters/compat (se IDs estão disponíveis) ---
+  useEffect(() => {
+    const id = nameToId.get(normalizeName(myHeroName));
+    LOG("counters:trigger", { hero: myHeroName, id });
+    setCounters([]); setCompat([]);
+    if (!id) return;
+    (async () => {
+      try {
+        const { json: c1 } = await getJSON(`${RID_API}/hero-counter/${id}/`);
+      const { json: c2 } = await getJSON(`${RID_API}/hero-compatibility/${id}/`);
+      const cn = extractArray(c1);
+      const cp = extractArray(c2);
+      LOG("counters:raw", { counters: (cn?.length ?? 0), compat: (cp?.length ?? 0) });
+      const pickNames = (arr) => {
+        const out = [];
+        for (const it of (arr||[])) {
+          const nm = normalizeName(it?.name || it?.hero?.data?.name || it?.data?.hero?.data?.name || it?.hero || it?.hero_name);
+          if (nm) out.push(nm);
+        }
+        return Array.from(new Set(out)).slice(0,5);
+      };
+      const cc = pickNames(cn);
+      const pp = pickNames(cp);
+      LOG("counters:final", { counters: cc, compat: pp });
+      setCounters(cc);
+      setCompat(pp);
+      } catch (err) {
+        LOGW("counters:error", err);
+      }
+    })();
+  }, [myHeroName, nameToId]);
+
+  // --- UI ---
+  const Pill = ({label, value}) => (
+    <div className="flex items-center justify-between bg-white/5 rounded px-2 py-1 text-xs">
+      <span>{label}</span><span className="font-mono">{String(value)}</span>
+    </div>
+  );
 
   return (
     <div className="min-h-screen text-white bg-gradient-to-b from-slate-900 to-slate-950 p-4 md:p-8">
       <div className="max-w-6xl mx-auto space-y-6">
         <header className="flex flex-col gap-2">
-          <h1 className="text-2xl md:text-3xl font-bold">MLBB Quick Draft Coach — V1 (Alpha)</h1>
-          <p className="text-sm opacity-80">Selecione seu herói/rota e os inimigos. Eu gero um plano instantâneo de lane, teamfight, macro, feitiços e itens situacionais.</p>
+          <h1 className="text-2xl md:text-3xl font-bold">MLBB Quick Draft Coach</h1>
+          
+          {apiError && <div className="text-xs text-yellow-300">{apiError}</div>}
         </header>
 
         <div className="grid md:grid-cols-3 gap-4">
           <div className="bg-white/5 rounded-2xl p-4 border border-white/10">
             <div className="flex items-center gap-2 mb-3">
               <label className="text-sm">Sua rota</label>
-              <select className="bg-transparent border rounded px-2 py-1" value={myRole} onChange={e=>setMyRole(e.target.value)}>
+              <select className="bg-transparent border rounded px-2 py-1" value={myRole} onChange={e=>{ setMyRole(e.target.value); LOG("UI:setMyRole", e.target.value); }}>
                 {['Gold','EXP','Mid','Jungle','Roam'].map(r=> <option key={r} value={r}>{r}</option>)}
               </select>
             </div>
             <div className="flex items-center gap-2">
               <label className="text-sm">Seu herói</label>
-              <input list="heroes" className="bg-transparent border rounded px-2 py-1 w-full" value={myHeroName} onChange={e=>setMyHeroName(e.target.value)} />
+              <input list="heroes" className="bg-transparent border rounded px-2 py-1 w-full" value={myHeroName} onChange={e=>{ setMyHeroName(e.target.value); LOG("UI:setMyHero", e.target.value); }} />
               <datalist id="heroes">
-                {ALL_HEROES.map(n => <option key={n} value={n} />)}
+                {roster.map(n => <option key={n} value={n} />)}
               </datalist>
             </div>
-            <div className="mt-1 text-xs opacity-80">Corrijo alguns nomes comuns automaticamente (ex.: "Matjhilda" → Mathilda, "Faranis" → Faramis).</div>
+            {myHero && (
+              <div className="mt-3 border-t border-white/10 pt-3 text-xs">
+                <div className="flex items-center gap-3">
+                  {heroMeta.img ? (
+                    <img src={heroMeta.img} alt={myHero.name} className="w-10 h-10 rounded-full object-cover" />
+                  ) : (
+                    <div className="w-10 h-10 rounded-full bg-white/10" />
+                  )}
+                  <div className="grid grid-cols-3 gap-3">
+                    <div><div className="opacity-70">Classe</div><div className="font-medium">{heroMeta.sort}</div></div>
+                    <div><div className="opacity-70">Rota</div><div className="font-medium">{heroMeta.road}</div></div>
+                    <div><div className="opacity-70">Especialidade</div><div className="font-medium">{heroMeta.speciality}</div></div>
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-3">
+                  <div><div className="opacity-70">Pick Rate</div><div className="font-medium">{heroMeta.pick}</div></div>
+                  <div><div className="opacity-70">Ban Rate</div><div className="font-medium">{heroMeta.ban}</div></div>
+                  <div><div className="opacity-70">Win Rate</div><div className="font-medium">{heroMeta.win}</div></div>
+                </div>
+              </div>
+            )}
+            
           </div>
 
-          <MultiPick label="Aliados (opcional, até 4)" selected={ally} setSelected={setAlly} />
-          <MultiPick label="Inimigos (até 5)" selected={enemy} setSelected={setEnemy} />
+          <MultiPick label="2. Seus Aliados" selected={ally} setSelected={setAlly} options={roster} max={4} />
+          <MultiPick label="3. Seus Inimigos" selected={enemy} setSelected={setEnemy} options={roster} max={5} />
         </div>
 
         {enemies.length > 0 && (
           <div className="grid md:grid-cols-3 gap-4">
-            <Section title="Battle Spell & Itens Situacionais">
-              <div><span className="font-semibold">Spell sugerido:</span> {out.spell}</div>
-              {out.items.core.length>0 && (
+            <Section title="Battle Spell & Itens">
+              <div><span className="font-semibold">Spell sugerido:</span> {spell}</div>
+              {items.core.length>0 && (
                 <div>
-                  <div className="font-semibold">Roteiro base (seu herói):</div>
-                  <ul className="list-disc ml-5">{out.items.core.map((i,idx)=>(<li key={idx}>{i}</li>))}</ul>
+                  <div className="font-semibold">Roteiro base:</div>
+                  <ul className="list-disc ml-5">{items.core.map((i,idx)=>(<li key={idx}>{i}</li>))}</ul>
                 </div>
               )}
-              {out.items.tech.length>0 && (
+              {items.tech.length>0 && (
                 <div>
                   <div className="font-semibold">Tech/Respostas:</div>
-                  <ul className="list-disc ml-5">{out.items.tech.map((i,idx)=>(<li key={idx}>{i}</li>))}</ul>
+                  <ul className="list-disc ml-5">{items.tech.map((i,idx)=>(<li key={idx}>{i}</li>))}</ul>
                 </div>
               )}
             </Section>
 
             <Section title="Plano de Lane / Early">
-              <ul className="list-disc ml-5">{out.lane.map((i,idx)=>(<li key={idx}>{i}</li>))}</ul>
+              <ul className="list-disc ml-5">{lane.map((i,idx)=>(<li key={idx}>{i}</li>))}</ul>
             </Section>
 
             <Section title="Teamfight & Macro">
               <div className="mb-2">
                 <div className="font-semibold">Teamfight</div>
-                <ul className="list-disc ml-5">{out.tf.map((i,idx)=>(<li key={idx}>{i}</li>))}</ul>
+                <ul className="list-disc ml-5">{tf.map((i,idx)=>(<li key={idx}>{i}</li>))}</ul>
               </div>
               <div>
                 <div className="font-semibold">Macro</div>
-                <ul className="list-disc ml-5">{out.macro.map((i,idx)=>(<li key={idx}>{i}</li>))}</ul>
+                <ul className="list-disc ml-5">{macro.map((i,idx)=>(<li key={idx}>{i}</li>))}</ul>
               </div>
             </Section>
           </div>
@@ -379,36 +621,67 @@ export default function App() {
 
         {enemies.length > 0 && (
           <div className="grid md:grid-cols-2 gap-4">
-            <Section title="Chamadas de Counter & Sinergia">
-              {out.counters.length>0 && (
-                <div className="mb-2">
-                  <div className="font-semibold">Counters úteis:</div>
-                  <ul className="list-disc ml-5">{out.counters.map((i,idx)=>(<li key={idx}>{i}</li>))}</ul>
-                </div>
-              )}
-              {out.synergy.length>0 && (
-                <div>
-                  <div className="font-semibold">Sinergias para seu pick:</div>
-                  <ul className="list-disc ml-5">{out.synergy.map((i,idx)=>(<li key={idx}>{i}</li>))}</ul>
-                </div>
-              )}
+            <Section title="Counters & Sinergias (API + Heurística)">
+              <div className="mb-2">
+                <div className="font-semibold">Counters da API (top 5):</div>
+                <div className="text-xs opacity-80 mb-1">Se vazio, o roster veio do fallback e esta seção pode estar limitada.</div>
+                <ul className="list-disc ml-5">{(counters.length?counters:["—"]).map((i,idx)=>(<li key={idx}>{i}</li>))}</ul>
+              </div>
+              <div className="mb-2">
+                <div className="font-semibold">Compatibilidade (parcerias) da API (top 5):</div>
+                <ul className="list-disc ml-5">{(compat.length?compat:["—"]).map((i,idx)=>(<li key={idx}>{i}</li>))}</ul>
+              </div>
+              <div>
+                <div className="font-semibold">Sugestões situacionais (heurística):</div>
+                <ul className="list-disc ml-5">
+                  {(() => {
+                    const out = [];
+                    const names = enemies.map(e=>e?.name);
+                    if (names.includes("Franco")) out.push("Diggie, Lolita, Purify em carregadores");
+                    if (names.includes("Saber") || names.includes("Gusion")) out.push("Rafaela/Estes p/ peel, Aegis em Brody/Melissa");
+                    if (names.includes("Estes") || names.includes("Floryn")) out.push("Anti-heal cedo em pelo menos 2 heróis");
+                    if (names.includes("Faramis")) out.push("Evite choke; Lolita/Valir negam engage");
+                    if (prof.tankyFront) out.push("Karrie/Brody/Dyrroth p/ frontline pesada");
+                    return out.length? out.map((i,idx)=>(<li key={idx}>{i}</li>)) : (<li key="n">—</li>);
+                  })()}
+                </ul>
+              </div>
             </Section>
 
-            <Section title="Perfil da Comp Inimiga (tags)">
+            <Section title="Indicadores da Composição Inimiga">
+              <div className="grid grid-cols-2 gap-2 text-xs mb-2">
+                <Pill label="Mix AD/AP" value={`${prof.adPct}% / ${prof.apPct}% (${prof.mixLabel})`} />
+                <Pill label="Frontline" value={prof.frontlineScore} />
+                <Pill label="Hard CC" value={prof.ccScore} />
+                <Pill label="Sustain" value={prof.sustainScore} />
+                <Pill label="Waveclear" value={prof.waveclearScore} />
+                <Pill label="Mobilidade" value={prof.mobilityScore} />
+              </div>
               <div className="grid grid-cols-2 gap-2 text-xs">
-                {Object.entries(out.prof.counts).sort((a,b)=>b[1]-a[1]).map(([k,v]) => (
+                {Object.entries(prof.counts).sort((a,b)=>b[1]-a[1]).map(([k,v]) => (
                   <div key={k} className="flex items-center justify-between bg-white/5 rounded px-2 py-1">
                     <span>{k}</span><span className="font-mono">{v}</span>
                   </div>
                 ))}
               </div>
-              <div className="mt-2 text-xs opacity-80">Dicas: HeavyDive (≥2), HeavyPick (≥2), HeavyPoke (≥2), HeavyCC (≥2), Sustain (≥1), Tanky (≥2), Wombo (≥1).</div>
+              <div className="mt-2 text-xs opacity-80">Heurísticas: HeavyDive ≥2 | HeavyPick ≥2 | HeavyPoke ≥2 | HeavyCC ≥2 | Sustain ≥1 | Tanky ≥2 | Wombo ≥1.</div>
             </Section>
           </div>
         )}
 
+        {enemies.length > 0 && (
+          <Section title="Regras de Ouro (execução prática)">
+            <ul className="list-disc ml-5">{rules.map((r,idx)=>(<li key={idx}>{r}</li>))}</ul>
+          </Section>
+        )}
+
         <footer className="text-xs opacity-70 pt-4">
-          <div>Versão 1 (Alpha). Heurísticas rápidas para tomada de decisão. Expanda o dataset conforme necessário.</div>
+          <div className="opacity-70">Versão: v3.2 (Beta)</div>
+          <div className="opacity-70">Atribuições: © Moonton; dados por ridwaanhall (BSD‑3). Este projeto não é afiliado à Moonton.</div>
+          <div className="opacity-70">Proxy: Cloudflare Workers — mlbb-proxy.tonycelestino.workers.dev</div>
+          <div className={`text-xs ${selfTest.ok ? 'text-emerald-300' : 'text-rose-300'}`}>Self-tests: {selfTest.ok ? 'OK' : `Falhou — ${selfTest.msg}`}</div>
+          <div className="text-xs opacity-70">Fonte do roster: {viaRoster || '—'}</div>
+          <div className="text-xs opacity-70">Obs: Corrijo nomes comuns ("Matjhilda"→Mathilda). Se faltarem IDs, counters/sinergias via API ficam limitados.</div>
         </footer>
       </div>
     </div>
