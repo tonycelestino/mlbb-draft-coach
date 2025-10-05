@@ -133,6 +133,45 @@ function extractArray(payload) {
   return [];
 }
 
+function preferRecordForId(payload, id) {
+  const arr = extractArray(payload);
+  if (!arr.length) {
+    const direct = payload?.data ?? payload;
+    return typeof direct === 'object' ? direct : {};
+  }
+  const idNum = Number(id);
+  const match = arr.find((rec) => {
+    const recId = getFirstByKeys(rec, ['hero_id','heroId','heroid','id']);
+    return recId != null && Number(recId) === idNum;
+  }) || arr[0];
+  const container = match?.data ?? match;
+  return typeof container === 'object' ? container : {};
+}
+
+function tidyDisplay(value) {
+  if (value == null) return '—';
+  if (Array.isArray(value)) {
+    const joined = value.map(tidyDisplay).filter(v => v && v !== '—');
+    return joined.length ? Array.from(new Set(joined)).join(' / ') : '—';
+  }
+  if (typeof value === 'object') {
+    for (const key of ['label','name','value','text']) {
+      if (value[key] != null) return tidyDisplay(value[key]);
+    }
+    return '—';
+  }
+  const str = String(value).trim();
+  return str || '—';
+}
+
+function formatPercent(value) {
+  if (value == null) return '—';
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '—';
+  const pct = num > 1 ? num : num * 100;
+  return `${pct.toFixed(2)}%`;
+}
+
 // Inferência básica de função -> rota/dano (sobrescrita por AUGMENT quando existir)
 const ROLE_MAP = { Marksman: "Gold", Fighter: "EXP", Mage: "Mid", Assassin: "Jungle", Tank: "Roam", Support: "Roam" };
 function inferFromRole(apiRole) {
@@ -463,30 +502,39 @@ export default function App() {
     (async () => {
       try {
         const { json: det } = await getJSON(`${RID_API}/hero-detail/${id}/`);
-        const d = det?.data ?? det;
-        const sort = (getFirstByKeys(d, ['sort','class','classe','role','type']) ?? '—');
-        const road = (getFirstByKeys(d, ['road','lane','rota','position']) ?? '—');
-        const speciality = (getFirstByKeys(d, ['speciality','specialty','especialidade']) ?? '—');
-        let img = (getFirstByKeys(d, ['head','image_head','avatar','icon']) ?? null);
+        const detail = preferRecordForId(det, id);
+        const heroNode = detail?.hero?.data ?? detail?.hero ?? detail;
+        const sortRaw = getFirstByKeys(heroNode, ['sort','class','classe','role','type','hero_class','heroClass']);
+        const roadRaw = getFirstByKeys(heroNode, ['road','lane','rota','position','role_lane','hero_lane','lane_role']);
+        const specialityRaw = getFirstByKeys(heroNode, ['speciality','specialty','especialidade','specialities','specialties']);
+        let img = (getFirstByKeys(heroNode, ['head','image_head','avatar','icon','hero_avatar','image','image_icon']) ?? null);
         if (img && typeof img === 'string' && !/^https?:/.test(img)) {
           try { const origin = new URL(RID_API).origin; img = origin + (img.startsWith('/')? img : '/' + img); } catch (_) {}
         }
+        const sort = tidyDisplay(sortRaw);
+        const road = tidyDisplay(roadRaw);
+        const speciality = tidyDisplay(specialityRaw);
         LOG("heroMeta:detail", { sort, road, speciality, hasImg: !!img });
         setHeroMeta(prev => ({ ...prev, img, sort, road, speciality }));
       } catch (e) { LOGW('heroMeta:detail:error', e); }
       try {
         const { json: rk } = await getJSON(`${RID_API}/hero-rank/?days=7&tier=Mythic&per_page=300&page=1`);
-        const recs = extractArray(rk);
-        LOG("heroMeta:rank:recs", Array.isArray(recs) ? recs.length : 'n/a');
-        const idNum = Number(id);
-        const find = recs.find((r) => {
-          const rid = (r?.data?.hero_id ?? r?.hero_id ?? r?.data?.id ?? r?.id);
-          return Number(rid) === idNum;
-        });
-        const fmt = (v) => (v==null ? '—' : `${(Number(v) <= 1 ? Number(v)*100 : Number(v)).toFixed(2)}%`);
-        const pick = fmt(find?.data?.pick_rate ?? find?.pick_rate);
-        const ban  = fmt(find?.data?.ban_rate ?? find?.ban_rate);
-        const win  = fmt(find?.data?.win_rate ?? find?.win_rate);
+        LOG("heroMeta:rank:recs", Array.isArray(extractArray(rk)) ? extractArray(rk).length : 'n/a');
+        const rankData = preferRecordForId(rk, id);
+        let pick = formatPercent(getFirstByKeys(rankData, ['pick_rate','pickRate','pick','pick_percent','pickPercentage']));
+        let ban  = formatPercent(getFirstByKeys(rankData, ['ban_rate','banRate','ban','ban_percent','banPercentage']));
+        let win  = formatPercent(getFirstByKeys(rankData, ['win_rate','winRate','win','win_percent','winPercentage']));
+        if (pick === '—' || ban === '—' || win === '—') {
+          try {
+            const { json: rate } = await getJSON(`${RID_API}/hero-rate/${id}/`);
+            const rateData = preferRecordForId(rate, id);
+            if (pick === '—') pick = formatPercent(getFirstByKeys(rateData, ['pick_rate','pickRate','pick','pick_percent']));
+            if (ban === '—')  ban  = formatPercent(getFirstByKeys(rateData, ['ban_rate','banRate','ban','ban_percent']));
+            if (win === '—')  win  = formatPercent(getFirstByKeys(rateData, ['win_rate','winRate','win','win_percent']));
+          } catch (rateErr) {
+            LOGW('heroMeta:rate:fallback:error', rateErr);
+          }
+        }
         LOG("heroMeta:rank", { pick, ban, win });
         setHeroMeta(prev => ({ ...prev, pick, ban, win }));
       } catch (e) { LOGW('heroMeta:rank:error', e); }
