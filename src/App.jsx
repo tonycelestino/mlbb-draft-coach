@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 
 /**
  * MLBB Quick Draft Coach [with debug logs]
@@ -180,6 +180,15 @@ const HERO_AUGMENT = {
   Yin:    { role: "EXP",    dmg: "Physical",tags: ["Pickoff","BacklineBurst"] },
   Cici:   { role: "EXP",    dmg: "Hybrid",  tags: ["Diver","Sustain"] },
   Selena: { role: "Roam",   dmg: "Magic",  tags: ["Pickoff","Poke"] },
+};
+
+const FALLBACK_CLASS_BY_ROLE = {
+  Gold: "Marksman",
+  EXP: "Fighter",
+  Mid: "Mage",
+  Jungle: "Assassin",
+  Roam: "Tank/Support",
+  Flex: "—",
 };
 
 // ========================= Perfil de composição =========================
@@ -368,7 +377,8 @@ export default function App() {
   const [compat, setCompat] = useState([]);
 
   // Hero meta (detalhe + taxas)
-  const [heroMeta, setHeroMeta] = useState({ img: null, sort: '—', road: '—', speciality: '—', pick: '—', ban: '—', win: '—' });
+  const emptyHeroMeta = useMemo(() => ({ img: null, sort: '—', road: '—', speciality: '—', pick: '—', ban: '—', win: '—' }), []);
+  const [heroMeta, setHeroMeta] = useState(emptyHeroMeta);
 
   // ===== Self-tests =====
   const [selfTest, setSelfTest] = useState({ ok: true, msg: '' });
@@ -455,10 +465,30 @@ export default function App() {
   const macro = useMemo(()=> { const m = macroPlan(myRole, myHero, prof); LOG("macroPlan", m); return m; }, [myRole, myHero, prof]);
   const rules = useMemo(()=> { const r = goldenRules(myRole, prof); LOG("goldenRules", r); return r; }, [myRole, prof]);
 
+  const buildFallbackHeroMeta = useCallback((hero, selectedRole) => {
+    if (!hero) return emptyHeroMeta;
+    const inferredLane = hero.role && hero.role !== 'Flex' ? hero.role : '';
+    const lane = inferredLane || selectedRole || hero.role || '—';
+    const guessedClass = hero.sort || FALLBACK_CLASS_BY_ROLE[lane] || '—';
+    const speciality = (Array.isArray(hero.tags) && hero.tags.length)
+      ? hero.tags.join(', ')
+      : '—';
+    return {
+      img: null,
+      sort: guessedClass,
+      road: lane,
+      speciality,
+      pick: 'N/A',
+      ban: 'N/A',
+      win: 'N/A',
+    };
+  }, [emptyHeroMeta]);
+
   // --- hero meta (detalhe + taxas) ---
   useEffect(() => {
+    const hero = heroFromName(myHeroName);
     const id = nameToId.get(normalizeName(myHeroName));
-    setHeroMeta({ img: null, sort: '—', road: '—', speciality: '—', pick: '—', ban: '—', win: '—' });
+    setHeroMeta(buildFallbackHeroMeta(hero, myRole));
     if (!id) return;
     (async () => {
       try {
@@ -491,7 +521,7 @@ export default function App() {
         setHeroMeta(prev => ({ ...prev, pick, ban, win }));
       } catch (e) { LOGW('heroMeta:rank:error', e); }
     })();
-  }, [myHeroName, nameToId]);
+  }, [myHeroName, nameToId, buildFallbackHeroMeta, myRole]);
 
   // --- counters/compat (se IDs estão disponíveis) ---
   useEffect(() => {
